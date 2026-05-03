@@ -1,0 +1,32 @@
+# Large dataset and binary model files — too large for git, use Git LFS or separate storage
+*.csv
+*.pkl
+*.zip
+*.h5
+*.pt
+*.bin
+
+# Compiled Python
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Virtual environments
+venv/
+.venv/
+env/
+.env/
+
+# Environment variables
+.env
+.env.local
+
+# Jupyter / IPython
+.ipynb_checkpoints/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
