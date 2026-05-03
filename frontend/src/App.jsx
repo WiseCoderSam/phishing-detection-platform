@@ -1,247 +1,286 @@
 import { useState } from 'react';
 import {
-  Shield, ShieldAlert, ShieldCheck, Link2, Loader2, AlertCircle, TriangleAlert,
-  CheckCircle2, XCircle, Lock, Code, Hash, Globe, Activity
+  Shield, ShieldAlert, ShieldCheck, Link2, Loader2, AlertCircle,
+  TriangleAlert, CheckCircle2, XCircle, Globe, Activity, Hash,
+  Search, ScrollText
 } from 'lucide-react';
+import './index.css';
 
-function App() {
-  const [url, setUrl] = useState('');
-  const [loading, setLoading] = useState(false);
-  const [result, setResult] = useState(null);
-  const [error, setError] = useState('');
+/* ── helpers ─────────────────────────────────────────────────────────────── */
+const toKey = (pred = '') => pred.toLowerCase();
+
+function riskColor(score) {
+  if (score <= 29) return 'var(--success)';
+  if (score <= 50) return 'var(--warning)';
+  return 'var(--danger)';
+}
+
+function generateChecks(reasons = []) {
+  return [
+    { id: 'blacklist', label: 'Safe Browsing Blacklist', passed: !reasons.some(r => r.includes('Blacklisted')),           desc: 'Not flagged by Google' },
+    { id: 'ml',        label: 'ML Analysis',             passed: !reasons.some(r => r.includes('model flagged')),          desc: 'AI anomaly detection' },
+    { id: 'brand',     label: 'Brand Impersonation',     passed: !reasons.some(r => r.includes('impersonation detected')), desc: 'Matches official domain' },
+    { id: 'keywords',  label: 'Suspicious Keywords',     passed: !reasons.some(r => r.includes('keyword')),               desc: 'No deceptive terms' },
+    { id: 'hyphens',   label: 'Domain Hyphens',          passed: !reasons.some(r => r.includes('hyphens')),               desc: 'Standard hyphen usage' },
+    { id: 'subdomains',label: 'Subdomain Depth',         passed: !reasons.some(r => r.includes('subdomains')),            desc: 'Normal subdomain depth' },
+  ];
+}
+
+function logClass(reason) {
+  const r = reason.toLowerCase();
+  if (r.includes('blacklist') || r.includes('phishing') || r.includes('high risk') || r.includes('dangerous')) return 'danger';
+  if (r.includes('suspicious') || r.includes('keyword') || r.includes('impersonation') || r.includes('hyphens') || r.includes('free host')) return 'warn';
+  return '';
+}
+
+/* ── Ring SVG ────────────────────────────────────────────────────────────── */
+function ScoreRing({ score, pred }) {
+  const r = 34;
+  const circ = 2 * Math.PI * r;
+  const dash = circ - (score / 100) * circ;
+  const color = riskColor(score);
+  return (
+    <div className="score-ring">
+      <svg width="80" height="80" viewBox="0 0 80 80">
+        <circle cx="40" cy="40" r={r} fill="none" stroke="var(--surface-high)" strokeWidth="6" />
+        <circle
+          cx="40" cy="40" r={r} fill="none"
+          stroke={color} strokeWidth="6"
+          strokeDasharray={circ}
+          strokeDashoffset={dash}
+          strokeLinecap="square"
+          style={{ transition: 'stroke-dashoffset 0.6s ease' }}
+        />
+      </svg>
+      <div className={`score-ring-num ${toKey(pred)}`}>{score}</div>
+    </div>
+  );
+}
+
+/* ── App ─────────────────────────────────────────────────────────────────── */
+export default function App() {
+  const [url, setUrl]               = useState('');
+  const [loading, setLoading]       = useState(false);
+  const [result, setResult]         = useState(null);
+  const [error, setError]           = useState('');
   const [recentScans, setRecentScans] = useState([]);
 
   const handleCheck = async (e) => {
     e.preventDefault();
+    if (!url.trim()) return setError('URL field is required.');
+    try { new URL(url.startsWith('http') ? url : 'http://' + url); }
+    catch { return setError('Invalid URL — enter a valid web address.'); }
 
-    if (!url.trim()) {
-      return setError('Please enter a URL.');
-    }
-
-    // 🔥 URL format validation
-    try {
-      new URL(url.startsWith('http') ? url : 'http://' + url);
-    } catch {
-      return setError('Please enter a valid URL (e.g., example.com)');
-    }
-
-    setLoading(true);
-    setError('');
-    setResult(null);
+    setLoading(true); setError(''); setResult(null);
 
     try {
-      const response = await fetch(`${import.meta.env.VITE_API_URL}/api/check-url`, {
+      const res = await fetch(`${import.meta.env.VITE_API_URL}/api/check-url`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({ url })
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url }),
       });
 
-      if (!response.ok) {
-        const errData = await response.json().catch(() => ({}));
-        throw new Error(errData.error || 'Failed to connect to the server.');
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || 'Server error.');
       }
 
-      const newResult = await response.json();
-
-      // generate scanId ONCE
-      newResult.scanId = Math.random().toString(36).substring(2, 10).toUpperCase();
-      setResult(newResult);
+      const data = await res.json();
+      data.scanId = Math.random().toString(36).substring(2, 10).toUpperCase();
+      data.scannedUrl = url;
+      setResult(data);
 
       setRecentScans(prev => {
-        // Prevent duplicate immediate recent scans
-        const filtered = prev.filter(scan => scan.url !== url);
-        return [{ url, result: newResult, time: new Date().toLocaleTimeString() }, ...filtered];
+        const filtered = prev.filter(s => s.url !== url);
+        return [{ url, result: data, time: new Date().toLocaleTimeString() }, ...filtered].slice(0, 8);
       });
     } catch (err) {
-      setResult(null); // 🔥 clears old result (IMPORTANT)
-      setError(err.message || 'Connection failed. No analysis was performed.');
+      setResult(null);
+      setError(err.message || 'Connection failed.');
     } finally {
       setLoading(false);
     }
   };
 
-  const handleRecentClick = (scan) => {
-    setUrl(scan.url);
-    setResult(scan.result);
-  };
-
-  const generateChecks = (reasons = []) => {
-    return [
-      { id: 'blacklist', label: 'Safe Browsing Blacklist', passed: !reasons.some(r => r.includes('Blacklisted')), desc: 'Not flagged by Google' },
-      { id: 'ml', label: 'Machine Learning Analysis', passed: !reasons.some(r => r.includes('model flagged')), desc: 'AI anomaly detection' },
-      { id: 'brand', label: 'Possible brand impersonation', passed: !reasons.some(r => r.includes('impersonation detected')), desc: 'Matches official domain' },
-      { id: 'keywords', label: 'Suspicious Keywords', passed: !reasons.some(r => r.includes('Suspicious keyword')), desc: 'No deceptive terms' },
-      { id: 'hyphens', label: 'Domain Hyphens', passed: !reasons.some(r => r.includes('Excessive hyphens')), desc: 'Standard hyphen usage' },
-      { id: 'subdomains', label: 'Subdomains Count', passed: !reasons.some(r => r.includes('high number of subdomains')), desc: 'Normal subdomain depth' },
-    ];
-  };
-
-  const getGradient = (score) => {
-    if (score <= 15) return 'linear-gradient(90deg, var(--success), var(--success))';
-    if (score <= 40) return 'linear-gradient(90deg, var(--success), var(--warning))';
-    return 'linear-gradient(90deg, var(--success), var(--warning), var(--danger))';
-  };
-
-  const getWidth = (score) => {
-    return `${Math.max(5, Math.min(score, 100))}%`;
-  };
-
   return (
-    <div className="app-container">
-      <div className="header">
-        <Shield className="header-icon" size={80} />
-        <h1>PhishGuard</h1>
-        <p>AI-Powered Phishing Link Detector</p>
-      </div>
+    <div className="shell">
+      <div className="main">
+        {/* ── Topbar ── */}
+        <header className="topbar">
+          <span className="topbar-title" style={{ display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--primary-container)', fontSize: '14px' }}>
+            <Shield size={16} /> PhishGuard
+          </span>
+        </header>
 
-      <div className="card">
-        <form onSubmit={handleCheck}>
-          <div className="input-group">
-            <Link2 className="input-icon" size={28} />
-            <input
-              type="text"
-              className="url-input"
-              placeholder="Enter website URL (e.g., example.com)"
-              value={url}
-              onChange={(e) => setUrl(e.target.value)}
-              disabled={loading}
-            />
-          </div>
+        {/* ── Scrollable Content ── */}
+        <div className="content">
 
-          <button type="submit" className="check-btn" disabled={loading}>
-            {loading ? (
-              <>
-                <Loader2 className="spinner" size={24} />
-                Analyzing with AI & Threat Intel...
-              </>
-            ) : (
-              'Check Security'
-            )}
-          </button>
-        </form>
-
-        {error && (
-          <div className="error-message">
-            <AlertCircle size={24} />
-            <span>{error}</span>
-          </div>
-        )}
-
-        {result && (
-          <div className="result-panel">
-            <div className="risk-score-container">
-              <div className={`score-circle ${result.prediction.toLowerCase()}`}>
-                <span className="score-value">{result.riskScore}</span>
-                <span className="score-label">Risk Score</span>
-              </div>
-
-              <div className={`result-badge ${result.prediction.toLowerCase()}`}>
-                {result.prediction === 'Safe' ? <ShieldCheck size={20} /> : result.prediction === 'Suspicious' ? <TriangleAlert size={20} /> : <ShieldAlert size={20} />}
-                {result.prediction}
-              </div>
+          {/* Scanner Input Card */}
+          <div className="scanner-card">
+            <div className="card-header">
+              <span className="card-header-title">
+                <Search size={14} />
+                URL Threat Analysis
+              </span>
             </div>
-
-            <div className="result-details">
-              <div className="details-header">
-                <h3>Threat Analysis Breakdown</h3>
-                <div className="threat-bar-container">
-                  <div
-                    className="threat-bar"
-                    style={{
-                      width: getWidth(result.riskScore),
-                      background: getGradient(result.riskScore)
-                    }}
-                  ></div>
-                </div>
-              </div>
-
-              <div className="check-grid">
-                {generateChecks(result.reasons).map((check, idx) => (
-                  <div className="check-item" key={idx}>
-                    {check.passed ? (
-                      <CheckCircle2 className="check-icon pass" size={20} />
-                    ) : (
-                      <XCircle className="check-icon fail" size={20} />
-                    )}
-                    <div className="check-content">
-                      <h4>{check.label}</h4>
-                      <p>{check.passed ? check.desc : 'Check failed'}</p>
-                    </div>
+            <div className="card-body">
+              <form onSubmit={handleCheck}>
+                <div className="input-row">
+                  <div className="url-field">
+                    <Link2 size={16} />
+                    <input
+                      id="url-input"
+                      className="url-input"
+                      type="text"
+                      placeholder="Enter target URL — e.g. example.com"
+                      value={url}
+                      onChange={e => setUrl(e.target.value)}
+                      disabled={loading}
+                      autoComplete="off"
+                      spellCheck="false"
+                    />
                   </div>
-                ))}
-              </div>
+                  <button id="scan-btn" className="scan-btn" type="submit" disabled={loading}>
+                    {loading
+                      ? <><Loader2 size={14} className="spinner" /> Scanning...</>
+                      : <><Search size={14} /> Analyze</>
+                    }
+                  </button>
+                </div>
+              </form>
 
-              {/* Detailed Reasons List */}
-              <div style={{ marginTop: '1.5rem', backgroundColor: 'var(--bg-color)', padding: '1rem', borderRadius: '0.5rem', border: '1px solid var(--border-color)' }}>
-                <h4 style={{ fontSize: '0.9rem', marginBottom: '0.5rem', color: 'var(--text-secondary)' }}>Detailed Log:</h4>
-                <ul style={{ listStylePosition: 'inside', fontSize: '0.85rem', color: 'var(--text-primary)', lineHeight: '1.5' }}>
-                  {result.reasons.map((r, i) => <li key={i}>{r}</li>)}
-                </ul>
-              </div>
-              {url.startsWith('http://') && (
-                <div style={{
-                  marginTop: '1rem',
-                  padding: '0.5rem',
-                  borderRadius: '0.5rem',
-                  backgroundColor: '#2a1f1f',
-                  color: '#ff6b6b',
-                  fontSize: '0.85rem',
-                  border: '1px solid #ff6b6b'
-                }}>
-                  ⚠️ This website is using HTTP (not secure)
+              {error && (
+                <div className="error-banner">
+                  <AlertCircle size={15} />
+                  {error}
                 </div>
               )}
-
-              <div className="whois-meta">
-                <div className="meta-item">
-                  <span className="meta-label">Engine Version</span>
-                  <span className="meta-value"><Activity size={14} /> v3.0 (ML + Rules)</span>
-                </div>
-                <div className="meta-item">
-                  <span className="meta-label">Scan ID</span>
-                  <span className="meta-value">
-                    <Hash size={14} /> {result.scanId}
-                  </span>                </div>
-              </div>
             </div>
           </div>
-        )}
-      </div>
 
-      <div className="recent-scans-section">
-        <h3>Recent Scans</h3>
-
-        {recentScans.length === 0 ? (
-          <div className="no-scans">No recent scans available. Analyze a URL to get started.</div>
-        ) : (
-          <div className="recent-scans-list">
-            {recentScans.map((scan, index) => (
-              <div
-                className="recent-scan-item"
-                key={index}
-                onClick={() => handleRecentClick(scan)}
-                style={{ cursor: 'pointer' }}
-                title="Click to view report"
-              >
-                <div className="scan-url">
-                  <Globe className="scan-url-icon" size={18} />
-                  {scan.url}
-                  <span className="scan-time">{scan.time}</span>
+          {/* ── Results (shown after scan) ── */}
+          {result && (
+            <div className="results-card">
+              {/* Result Header */}
+              <div className="result-header">
+                <div className={`verdict-badge ${toKey(result.prediction)}`}>
+                  {result.prediction === 'Safe'
+                    ? <ShieldCheck size={14} />
+                    : result.prediction === 'Suspicious'
+                    ? <TriangleAlert size={14} />
+                    : <ShieldAlert size={14} />
+                  }
+                  {result.prediction}
                 </div>
-
-                <div className={`scan-result-badge ${scan.result.prediction.toLowerCase()}`}>
-                  {scan.result.prediction === 'Safe' ? <ShieldCheck size={16} /> : scan.result.prediction === 'Suspicious' ? <TriangleAlert size={16} /> : <ShieldAlert size={16} />}
-                  {scan.result.prediction}
+                <div className="scan-meta">
+                  <span><Hash size={10} style={{display:'inline',marginRight:4}} />{result.scanId}</span>
+                  <span><Activity size={10} style={{display:'inline',marginRight:4}} />ENGINE v3.0</span>
                 </div>
               </div>
-            ))}
+
+              {/* Score + Threat Bar */}
+              <div className="score-gauge-row">
+                <div className="score-block">
+                  <ScoreRing score={result.riskScore} pred={result.prediction} />
+                  <div className="score-ring-label">Risk Score</div>
+                </div>
+                <div className="threat-bar-section">
+                  <div className="threat-bar-label">Threat Level</div>
+                  <div className="threat-bar-track">
+                    <div
+                      className="threat-bar-fill"
+                      style={{
+                        width: `${Math.max(5, result.riskScore)}%`,
+                        background: riskColor(result.riskScore),
+                      }}
+                    />
+                  </div>
+                  <div style={{ marginTop: 10, fontSize: 12, color: 'var(--on-surface-variant)', fontFamily: 'var(--font-mono)' }}>
+                    {result.scannedUrl}
+                  </div>
+
+                  {/* HTTP warning inline */}
+                  {url.startsWith('http://') && (
+                    <div className="http-warn" style={{ margin: '12px 0 0' }}>
+                      <TriangleAlert size={13} /> Insecure connection — site uses HTTP, not HTTPS
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Security Checks Grid */}
+              <div className="checks-section">
+                <div className="checks-section-title">Security Checks</div>
+                <div className="checks-grid">
+                  {generateChecks(result.reasons).map(check => (
+                    <div className="check-item" key={check.id}>
+                      {check.passed
+                        ? <CheckCircle2 size={15} className="check-icon-pass" />
+                        : <XCircle     size={15} className="check-icon-fail" />
+                      }
+                      <div className="check-text">
+                        <h4>{check.label}</h4>
+                        <p>{check.passed ? check.desc : 'Check failed'}</p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Analysis Log */}
+              <div className="log-section">
+                <div className="log-section-title">Analysis Log</div>
+                <div className="log-terminal">
+                  {result.reasons.map((r, i) => (
+                    <div key={i} className={`log-line ${logClass(r)}`}>{r}</div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* ── Recent Scans ── */}
+          <div className="recent-card">
+            <div className="card-header">
+              <span className="card-header-title">
+                <ScrollText size={14} />
+                Recent Scans
+              </span>
+            </div>
+            {recentScans.length === 0
+              ? <div className="no-scans">No recent scans — analyze a URL to get started.</div>
+              : (
+                <div className="recent-list">
+                  {recentScans.map((scan, i) => (
+                    <div
+                      className="recent-row"
+                      key={i}
+                      onClick={() => { setUrl(scan.url); setResult(scan.result); }}
+                      title="Click to reload result"
+                    >
+                      <div className="recent-url">
+                        <Globe size={13} />
+                        <span>{scan.url}</span>
+                        <span className="recent-time">{scan.time}</span>
+                      </div>
+                      <div className={`verdict-badge ${toKey(scan.result.prediction)}`} style={{ padding: '2px 8px', fontSize: '10px' }}>
+                        {scan.result.prediction === 'Safe'
+                          ? <ShieldCheck size={11} />
+                          : scan.result.prediction === 'Suspicious'
+                          ? <TriangleAlert size={11} />
+                          : <ShieldAlert size={11} />
+                        }
+                        {scan.result.prediction}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )
+            }
           </div>
-        )}
-      </div>
+
+        </div>{/* /content */}
+      </div>{/* /main */}
     </div>
   );
 }
-
-export default App;
