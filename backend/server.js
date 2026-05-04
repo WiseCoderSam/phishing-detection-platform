@@ -92,7 +92,7 @@ async function checkSafeBrowsing(url) {
 // 2. Machine Learning API Check
 async function checkMLService(inputURL) {
   try {
-    const ML_URL = process.env.ML_SERVICE_URL || 'http://127.0.0.1:5001';
+    const ML_URL = process.env.ML_SERVICE_URL || 'https://phish-123.onrender.com';
     console.log(`[DEBUG] Sending ML request for URL: ${inputURL} to ${ML_URL}/predict`);
     const response = await axios.post(
       `${ML_URL}/predict`,
