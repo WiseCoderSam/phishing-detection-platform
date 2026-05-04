@@ -97,7 +97,7 @@ async function checkMLService(inputURL) {
     const response = await axios.post(
       `${ML_URL}/predict`,
       { url: inputURL },
-      { timeout: 5000 }
+      { timeout: 60000 } // 60 seconds to allow Render free tier to wake up
     );
     console.log(`[DEBUG] Received ML response:`, response.data);
     return response.data; // { result: 'Safe'|'Suspicious'|'Phishing', risk_score, ml_score, flags }
