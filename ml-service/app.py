@@ -13,6 +13,11 @@ try:
 except Exception as e:
     print(f"CRITICAL: Could not load model or vectorizer. Error: {e}")
 
+@app.after_request
+def remove_header(response):
+    response.headers['Server'] = 'PhishGuard-ML'
+    return response
+
 # ── Rule-based scoring ────────────────────────────────────────────────────────
 
 # High-risk keywords that strongly suggest a scam or phishing page

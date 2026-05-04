@@ -13,6 +13,9 @@ const rateLimit = require('express-rate-limit');
 // Trust proxy required for rate limiting behind reverse proxies (Nginx, Render, etc.)
 app.set('trust proxy', 1);
 
+// Disable header leak (hide Express)
+app.disable('x-powered-by');
+
 // Security Headers
 app.use(helmet());
 

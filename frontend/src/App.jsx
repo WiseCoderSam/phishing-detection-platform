@@ -195,7 +195,7 @@ export default function App() {
                       }}
                     />
                   </div>
-                  <div style={{ marginTop: 10, fontSize: 12, color: 'var(--on-surface-variant)', fontFamily: 'var(--font-mono)' }}>
+                  <div style={{ marginTop: 10, fontSize: 12, color: 'var(--on-surface-variant)', fontFamily: 'var(--font-mono)', wordBreak: 'break-all' }}>
                     {result.scannedUrl}
                   </div>
 
