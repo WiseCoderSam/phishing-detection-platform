@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import {
   Shield, ShieldAlert, ShieldCheck, Link2, Loader2, AlertCircle,
   TriangleAlert, CheckCircle2, XCircle, Globe, Activity, Hash,
@@ -64,6 +64,11 @@ export default function App() {
   const [result, setResult]         = useState(null);
   const [error, setError]           = useState('');
   const [recentScans, setRecentScans] = useState([]);
+
+  // Proactively wake up backend and ML service on first load
+  useEffect(() => {
+    import.meta.env.VITE_API_URL && fetch(`${import.meta.env.VITE_API_URL}/api/health`).catch(() => {});
+  }, []);
 
   const handleCheck = async (e) => {
     e.preventDefault();
