@@ -6,10 +6,13 @@ import re
 app = Flask(__name__)
 CORS(app)
 
+import os
+
 # Load the trained model and vectorizer
 try:
-    model = joblib.load("model.pkl")
-    vectorizer = joblib.load("vectorizer.pkl")
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+    model = joblib.load(os.path.join(BASE_DIR, "model.pkl"))
+    vectorizer = joblib.load(os.path.join(BASE_DIR, "vectorizer.pkl"))
 except Exception as e:
     print(f"CRITICAL: Could not load model or vectorizer. Error: {e}")
 
