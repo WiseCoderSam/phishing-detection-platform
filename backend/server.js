@@ -17,7 +17,9 @@ app.set('trust proxy', 1);
 app.disable('x-powered-by');
 
 // Security Headers
-app.use(helmet());
+app.use(helmet({
+  crossOriginResourcePolicy: false,
+}));
 
 // Rate Limiting (max 100 requests per 15 minutes per IP)
 const limiter = rateLimit({
