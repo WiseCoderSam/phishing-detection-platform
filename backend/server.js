@@ -41,26 +41,22 @@ const SUSPICIOUS_KEYWORDS = ['login', 'verify', 'update', 'secure', 'account', '
 
 // 1. Google Safe Browsing API Integration
 async function checkSafeBrowsing(url) {
-  // Read from .env file
   const API_KEY = process.env.GOOGLE_SAFE_BROWSING_API_KEY;
 
-  // If no API key is provided, we simulate the check for testing/education purposes.
-  // We'll hardcode some known bad domains to simulate a blacklist hit if no key exists.
   const dummyBlacklist = ['paypal-login-security-update.com', 'evil-phishing-site.net'];
 
   if (!API_KEY) {
     try {
       const parsedUrl = new URL(url);
       if (dummyBlacklist.includes(parsedUrl.hostname)) {
-        return true; // Blacklisted
+        return true;
       }
-      return false; // Safe
+      return false;
     } catch (e) {
       return false;
     }
   }
 
-  // Real API implementation
   try {
     const response = await axios.post(
       `https://safebrowsing.googleapis.com/v4/threatMatches:find?key=${API_KEY}`,
@@ -73,12 +69,9 @@ async function checkSafeBrowsing(url) {
           threatEntries: [{ url }]
         }
       },
-      {
-        timeout: 5000
-      }
+      { timeout: 5000 }
     );
 
-    // If matches is present, it's flagged
     return response.data && response.data.matches && response.data.matches.length > 0;
   } catch (error) {
     if (error.code === 'ECONNABORTED') {
@@ -86,7 +79,7 @@ async function checkSafeBrowsing(url) {
     } else {
       console.error("Safe Browsing API Error:", error.message);
     }
-    return false; // Fail open for the sake of the app if API fails
+    return false;
   }
 }
 
@@ -97,24 +90,30 @@ async function checkMLService(inputURL) {
     const response = await axios.post(
       `${ML_SERVICE_URL}/predict`,
       { url: inputURL },
-      { timeout: 60000 } 
+      { timeout: 60000 }
     );
     console.log(`[DEBUG] Received ML response:`, response.data);
-    return response.data; // { result: 'Safe'|'Suspicious'|'Phishing', risk_score, ml_score, flags }
+    return response.data;
   } catch (error) {
     if (error.code === 'ECONNABORTED') {
       console.error("[DEBUG] ML request timed out");
     } else {
       console.error("[DEBUG] ML Service Error:", error.message);
-    } return null; // Fallback response to prevent crash
+    }
+    return null;
   }
 }
 
-// Health Check Endpoint to Wake Up Servers
+// Health Check Endpoint — wakes up both this server and the ML service simultaneously
 app.get('/api/health', (req, res) => {
-  // Ping the ML service so it starts waking up simultaneously
-  axios.get(`${ML_SERVICE_URL}/`).catch(() => {});
+  axios.get(`${ML_SERVICE_URL}/`).catch(() => { });
   res.json({ status: 'awake' });
+});
+
+// Root endpoint — required for uptime monitors (e.g. UptimeRobot) to get a 200 OK
+app.get('/', (req, res) => {
+  axios.get(`${ML_SERVICE_URL}/`).catch(() => { });
+  res.status(200).send('PhishGuard Backend is running.');
 });
 
 // Main Endpoint
@@ -155,31 +154,27 @@ app.post('/api/check-url', async (req, res) => {
 
     // --- B. Machine Learning + Rule-Based Service Check ---
     const mlResult = await checkMLService(processedUrl);
-    
+
     if (mlResult) {
-      // Use the authoritative result and risk_score from the Python service
-      prediction = mlResult.result || 'Safe';          // 'Safe' | 'Suspicious' | 'Phishing'
-      riskScore  = mlResult.risk_score ?? 0;           // integer 0-100
+      prediction = mlResult.result || 'Safe';
+      riskScore = mlResult.risk_score ?? 0;
 
       const mlPct = mlResult.ml_score ?? 0;
       reasons.push(`ML + Rules analysis: ${prediction} (Risk Score: ${riskScore}/100, ML confidence: ${mlPct.toFixed(1)}%)`);
 
-      // Surface rule-based flags as individual reasons
       if (Array.isArray(mlResult.flags)) {
         mlResult.flags.forEach(flag => reasons.push(flag));
       }
     } else {
       reasons.push('ML Service unavailable, relying on rule-based fallback.');
-      prediction = 'Suspicious'; // Fallback
+      prediction = 'Suspicious';
       riskScore = 50;
     }
 
-    // Helper to only add negative rules if we are already flagging as phishing.
-    // This prevents rules from contradicting a 'Safe' ML decision.
     const addRuleExplanation = (reason) => {
-        if (prediction === 'Phishing' || prediction === 'Suspicious') {
-            reasons.push(reason);
-        }
+      if (prediction === 'Phishing' || prediction === 'Suspicious') {
+        reasons.push(reason);
+      }
     };
 
     // --- C. Rule-based Explanations (Supports ML) ---
@@ -191,12 +186,10 @@ app.post('/api/check-url', async (req, res) => {
 
     // 2. Brand Impersonation Check
     TARGET_BRANDS.forEach((brand) => {
-      // If the brand name appears anywhere in the URL
       if (fullUrlLower.includes(brand)) {
         const domainParts = hostname.split('.');
         const rootDomain = domainParts.slice(-2).join('.');
-        
-        // Exact official domain check
+
         if (
           rootDomain !== `${brand}.com` &&
           rootDomain !== `${brand}.net` &&
@@ -235,19 +228,19 @@ app.post('/api/check-url', async (req, res) => {
       addRuleExplanation('Unusually high number of subdomains.');
     }
 
-    // Final UI Consistency Check
+    // Final UI Consistency
     if (prediction === 'Phishing' && reasons.length <= 2) {
-        reasons.push('Hidden anomalies detected by Machine Learning pattern recognition.');
+      reasons.push('Hidden anomalies detected by Machine Learning pattern recognition.');
     }
 
     if (prediction === 'Safe') {
-        reasons.push('No obvious suspicious features detected based on AI rules.');
+      reasons.push('No obvious suspicious features detected based on AI rules.');
     }
 
     res.json({
       prediction,
       riskScore,
-      reasons: [...new Set(reasons)] // Unique reasons
+      reasons: [...new Set(reasons)]
     });
 
   } catch (error) {
@@ -260,6 +253,14 @@ app.listen(PORT, () => {
   console.log(`Running on http://localhost:${PORT}`);
 });
 
+// Keep-alive: ping both services every 10 minutes to prevent Render free tier sleep
 setInterval(() => {
-  console.log("Server still running...");
-}, 10000);
+  console.log("[Keep-Alive] Pinging ML service...");
+  axios.get(`${ML_SERVICE_URL}/`).catch(() => { });
+
+  const selfUrl = process.env.SELF_URL;
+  if (selfUrl) {
+    console.log("[Keep-Alive] Pinging self...");
+    axios.get(`${selfUrl}/api/health`).catch(() => { });
+  }
+}, 10 * 60 * 1000);
