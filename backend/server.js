@@ -6,6 +6,7 @@ const axios = require('axios');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
+const ML_SERVICE_URL = process.env.ML_SERVICE_URL || 'https://phish-123.onrender.com';
 
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
@@ -92,12 +93,11 @@ async function checkSafeBrowsing(url) {
 // 2. Machine Learning API Check
 async function checkMLService(inputURL) {
   try {
-    const ML_URL = 'https://phish-123.onrender.com';
-    console.log(`[DEBUG] Sending ML request for URL: ${inputURL} to ${ML_URL}/predict`);
+    console.log(`[DEBUG] Sending ML request for URL: ${inputURL} to ${ML_SERVICE_URL}/predict`);
     const response = await axios.post(
-      `${ML_URL}/predict`,
+      `${ML_SERVICE_URL}/predict`,
       { url: inputURL },
-      { timeout: 120000 } // 120 seconds to allow slow Render free tier to wake up
+      { timeout: 60000 } 
     );
     console.log(`[DEBUG] Received ML response:`, response.data);
     return response.data; // { result: 'Safe'|'Suspicious'|'Phishing', risk_score, ml_score, flags }
@@ -113,7 +113,7 @@ async function checkMLService(inputURL) {
 // Health Check Endpoint to Wake Up Servers
 app.get('/api/health', (req, res) => {
   // Ping the ML service so it starts waking up simultaneously
-  axios.get('https://phish-123.onrender.com/').catch(() => {});
+  axios.get(`${ML_SERVICE_URL}/`).catch(() => {});
   res.json({ status: 'awake' });
 });
 
