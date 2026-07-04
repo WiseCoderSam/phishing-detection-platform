@@ -18,7 +18,7 @@ function riskColor(score) {
 function generateChecks(reasons = []) {
   return [
     { id: 'blacklist', label: 'Safe Browsing Blacklist', passed: !reasons.some(r => r.includes('Blacklisted')),           desc: 'Not flagged by Google' },
-    { id: 'ml',        label: 'ML Analysis',             passed: !reasons.some(r => r.includes('model flagged')),          desc: 'AI anomaly detection' },
+    { id: 'ml',        label: 'ML Analysis',             passed: !reasons.some(r => r.toLowerCase().includes('highly confident')), desc: 'AI anomaly detection' },
     { id: 'brand',     label: 'Brand Impersonation',     passed: !reasons.some(r => r.includes('impersonation detected')), desc: 'Matches official domain' },
     { id: 'keywords',  label: 'Suspicious Keywords',     passed: !reasons.some(r => r.includes('keyword')),               desc: 'No deceptive terms' },
     { id: 'hyphens',   label: 'Domain Hyphens',          passed: !reasons.some(r => r.includes('hyphens')),               desc: 'Standard hyphen usage' },
@@ -64,10 +64,43 @@ export default function App() {
   const [result, setResult]         = useState(null);
   const [error, setError]           = useState('');
   const [recentScans, setRecentScans] = useState([]);
+  // If no API URL is configured there's nothing to warm, so the engine is "ready" immediately.
+  const [engineReady, setEngineReady] = useState(!import.meta.env.VITE_API_URL);
+  const [warmSecs, setWarmSecs]     = useState(0);
 
-  // Proactively wake up backend and ML service on first load
+  // Proactively wake the backend + ML service on first load and poll until both are up.
+  // On Render's free tier a cold start can take ~50s, so we show a live timer and keep the
+  // Analyze button disabled until the engine reports ready.
   useEffect(() => {
-    import.meta.env.VITE_API_URL && fetch(`${import.meta.env.VITE_API_URL}/api/health`).catch(() => {});
+    const apiUrl = import.meta.env.VITE_API_URL;
+    if (!apiUrl) return;   // nothing to warm — engineReady already initialised true above
+
+    let cancelled = false;
+    const started = Date.now();
+    const finish = () => { if (!cancelled) { cancelled = true; setEngineReady(true); } };
+
+    const timer = setInterval(() => {
+      if (!cancelled) setWarmSecs(Math.floor((Date.now() - started) / 1000));
+    }, 1000);
+
+    // Safety net: never keep the UI locked for more than 25s, even if /api/health is
+    // unreachable or an older backend doesn't report `ml`. The user can then scan manually.
+    const fallback = setTimeout(finish, 25000);
+
+    const poll = async () => {
+      while (!cancelled) {
+        try {
+          const res = await fetch(`${apiUrl}/api/health`);
+          const data = await res.json().catch(() => ({}));
+          // Ready when ML reports awake, OR when talking to an older backend with no `ml` field.
+          if (data.ml === 'awake' || (res.ok && data.ml === undefined)) { finish(); break; }
+        } catch { /* backend still cold — keep polling */ }
+        await new Promise(r => setTimeout(r, 3000));
+      }
+    };
+    poll();
+
+    return () => { cancelled = true; clearInterval(timer); clearTimeout(fallback); };
   }, []);
 
   const handleCheck = async (e) => {
@@ -129,6 +162,21 @@ export default function App() {
               </span>
             </div>
             <div className="card-body">
+              {!engineReady && (
+                <div
+                  className="warmup-banner"
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: 8,
+                    padding: '10px 12px', marginBottom: 12, borderRadius: 6,
+                    fontSize: 13, color: 'var(--warning)',
+                    background: 'color-mix(in srgb, var(--warning) 12%, transparent)',
+                    border: '1px solid color-mix(in srgb, var(--warning) 35%, transparent)',
+                  }}
+                >
+                  <Loader2 size={15} className="spinner" />
+                  Waking the detection engine (free-tier cold start)… {warmSecs}s
+                </div>
+              )}
               <form onSubmit={handleCheck}>
                 <div className="input-row">
                   <div className="url-field">
@@ -140,13 +188,15 @@ export default function App() {
                       placeholder="Enter target URL — e.g. example.com"
                       value={url}
                       onChange={e => setUrl(e.target.value)}
-                      disabled={loading}
+                      disabled={loading || !engineReady}
                       autoComplete="off"
                       spellCheck="false"
                     />
                   </div>
-                  <button id="scan-btn" className="scan-btn" type="submit" disabled={loading}>
-                    {loading
+                  <button id="scan-btn" className="scan-btn" type="submit" disabled={loading || !engineReady}>
+                    {!engineReady
+                      ? <><Loader2 size={14} className="spinner" /> Warming up…</>
+                      : loading
                       ? <><Loader2 size={14} className="spinner" /> Scanning...</>
                       : <><Search size={14} /> Analyze</>
                     }

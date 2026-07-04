@@ -6,7 +6,22 @@ const axios = require('axios');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
+// Falls back to the deployed ML service so production keeps working even if ML_SERVICE_URL
+// isn't set in the environment. Override it locally via .env (http://127.0.0.1:5001).
 const ML_SERVICE_URL = process.env.ML_SERVICE_URL || 'https://phish-123.onrender.com';
+
+// Shared secret sent to the ML service so /predict only accepts calls from this backend.
+const ML_INTERNAL_TOKEN = process.env.ML_INTERNAL_TOKEN;
+
+// Browser origins allowed to call this API (comma-separated env, e.g. "https://app.example.com").
+// If unset, CORS stays open for local dev — a startup warning is logged so prod deploys lock it down.
+const ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS
+  ? process.env.ALLOWED_ORIGINS.split(',').map((o) => o.trim()).filter(Boolean)
+  : null;
+
+// Verbose request logging is off by default so URLs/responses don't leak into production logs.
+const DEBUG = process.env.DEBUG_LOGS === '1';
+const debug = (...args) => { if (DEBUG) console.log(...args); };
 
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
@@ -30,11 +45,19 @@ const limiter = rateLimit({
 });
 app.use(limiter);
 
-app.use(cors());
-app.use(express.json());
+app.use(cors({
+  origin: ALLOWED_ORIGINS || true,
+  methods: ['GET', 'POST'],
+}));
+if (!ALLOWED_ORIGINS) {
+  console.warn('[SECURITY] ALLOWED_ORIGINS is not set — CORS is open to all origins. Set it in production.');
+}
+
+// Cap request bodies — inputs are just URLs, so 10kb is plenty and blocks payload-based abuse.
+app.use(express.json({ limit: '10kb' }));
 
 // Known sensitive brand names often impersonated in phishing
-const TARGET_BRANDS = ['paypal', 'google', 'facebook', 'amazon', 'apple', 'bank', 'microsoft', 'netflix'];
+const TARGET_BRANDS = ['paypal', 'google', 'facebook', 'amazon', 'apple', 'microsoft', 'netflix'];
 
 // Keywords frequently used in phishing URLs
 const SUSPICIOUS_KEYWORDS = ['login', 'verify', 'update', 'secure', 'account', 'banking', 'auth', 'confirm'];
@@ -85,29 +108,46 @@ async function checkSafeBrowsing(url) {
 
 // 2. Machine Learning API Check
 async function checkMLService(inputURL) {
-  try {
-    console.log(`[DEBUG] Sending ML request for URL: ${inputURL} to ${ML_SERVICE_URL}/predict`);
-    const response = await axios.post(
-      `${ML_SERVICE_URL}/predict`,
-      { url: inputURL },
-      { timeout: 60000 }
-    );
-    console.log(`[DEBUG] Received ML response:`, response.data);
-    return response.data;
-  } catch (error) {
-    if (error.code === 'ECONNABORTED') {
-      console.error("[DEBUG] ML request timed out");
-    } else {
-      console.error("[DEBUG] ML Service Error:", error.message);
+  const sendRequest = () => axios.post(
+    `${ML_SERVICE_URL}/predict`,
+    { url: inputURL },
+    {
+      timeout: 60000,
+      headers: ML_INTERNAL_TOKEN ? { 'X-Internal-Token': ML_INTERNAL_TOKEN } : {},
     }
-    return null;
+  );
+
+  // Two attempts: the first request can fail while the free-tier ML container is still cold-starting.
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      debug(`[DEBUG] ML request attempt ${attempt} for URL: ${inputURL}`);
+      const response = await sendRequest();
+      debug(`[DEBUG] Received ML response:`, response.data);
+      return response.data;
+    } catch (error) {
+      const reason = error.code === 'ECONNABORTED' ? 'timed out' : error.message;
+      console.error(`ML Service error (attempt ${attempt}): ${reason}`);
+      if (attempt === 1) {
+        await new Promise((r) => setTimeout(r, 2000));
+      }
+    }
   }
+  return null;
 }
 
-// Health Check Endpoint — wakes up both this server and the ML service simultaneously
-app.get('/api/health', (req, res) => {
-  axios.get(`${ML_SERVICE_URL}/`).catch(() => { });
-  res.json({ status: 'awake' });
+// Health Check Endpoint — reports real readiness of BOTH services.
+// Also triggers the ML service to wake if it's cold. The frontend polls this until ml === 'awake'.
+app.get('/api/health', async (req, res) => {
+  let ml = 'sleeping';
+  try {
+    // Short timeout: if ML is still cold this returns 'sleeping' (and the request itself starts
+    // its wake-up), so the frontend keeps polling rather than hanging on a 50s cold start.
+    await axios.get(`${ML_SERVICE_URL}/`, { timeout: 8000 });
+    ml = 'awake';
+  } catch (e) {
+    // ML still waking — leave status as 'sleeping'.
+  }
+  res.json({ backend: 'awake', ml });
 });
 
 // Root endpoint — required for uptime monitors (e.g. UptimeRobot) to get a 200 OK
@@ -139,9 +179,9 @@ app.post('/api/check-url', async (req, res) => {
     const reasons = [];
 
     // --- A. Google Safe Browsing Check (Overrides all) ---
-    console.log("Checking Google Safe Browsing for:", processedUrl);
+    debug("Checking Google Safe Browsing for:", processedUrl);
     const isBlacklisted = await checkSafeBrowsing(processedUrl);
-    console.log("Blacklist result:", isBlacklisted);
+    debug("Blacklist result:", isBlacklisted);
     if (isBlacklisted) {
       return res.json({
         prediction: 'Phishing',
@@ -184,9 +224,9 @@ app.post('/api/check-url', async (req, res) => {
       addRuleExplanation('Domain is an IP address instead of a standard domain name.');
     }
 
-    // 2. Brand Impersonation Check
+    // 2. Brand Impersonation Check (match the hostname, not the path — avoids example.com/apple)
     TARGET_BRANDS.forEach((brand) => {
-      if (fullUrlLower.includes(brand)) {
+      if (hostname.includes(brand)) {
         const domainParts = hostname.split('.');
         const rootDomain = domainParts.slice(-2).join('.');
 
@@ -253,14 +293,14 @@ app.listen(PORT, () => {
   console.log(`Running on http://localhost:${PORT}`);
 });
 
-// Keep-alive: ping both services every 10 minutes to prevent Render free tier sleep
+// Keep the ML service warm WHILE this backend is awake by pinging it every 10 minutes.
+//
+// IMPORTANT: a process cannot keep ITSELF awake — once Render's free tier spins this backend
+// down (~15 min without external traffic), this interval stops running too. To prevent the
+// backend from sleeping, an EXTERNAL uptime monitor (e.g. UptimeRobot or cron-job.org) must hit
+// this backend's "/" every ~10 min. That external ping cascades a wake-up to the ML service,
+// so keeping the backend awake keeps both services awake.
 setInterval(() => {
-  console.log("[Keep-Alive] Pinging ML service...");
-  axios.get(`${ML_SERVICE_URL}/`).catch(() => { });
-
-  const selfUrl = process.env.SELF_URL;
-  if (selfUrl) {
-    console.log("[Keep-Alive] Pinging self...");
-    axios.get(`${selfUrl}/api/health`).catch(() => { });
-  }
+  debug("[Keep-Alive] Pinging ML service to keep it warm...");
+  axios.get(`${ML_SERVICE_URL}/`, { timeout: 8000 }).catch(() => { });
 }, 10 * 60 * 1000);

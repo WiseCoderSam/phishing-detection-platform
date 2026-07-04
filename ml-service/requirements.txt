@@ -3,3 +3,4 @@ flask-cors
 joblib
 scikit-learn
 gunicorn
+python-dotenv

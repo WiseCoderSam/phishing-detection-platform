@@ -2,11 +2,25 @@ from flask import Flask, request, jsonify, render_template
 from flask_cors import CORS
 import joblib
 import re
+import os
+
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
+# Browser origins allowed to call this service (comma-separated env). If unset, defaults to open
+# for local dev; the backend→ML server-to-server path is authenticated separately by a shared token.
+_origins = os.environ.get('ALLOWED_ORIGINS')
+ALLOWED_ORIGINS = [o.strip() for o in _origins.split(',') if o.strip()] if _origins else '*'
+
+# Shared secret required on JSON /predict calls (the backend→ML channel). If unset, the check is
+# skipped so local dev and the demo form keep working; set it in production to lock the API down.
+ML_INTERNAL_TOKEN = os.environ.get('ML_INTERNAL_TOKEN')
 
 app = Flask(__name__)
-CORS(app)
-
-import os
+CORS(app, origins=ALLOWED_ORIGINS)
 
 # Load the trained model and vectorizer
 try:
@@ -14,6 +28,8 @@ try:
     model = joblib.load(os.path.join(BASE_DIR, "model.pkl"))
     vectorizer = joblib.load(os.path.join(BASE_DIR, "vectorizer.pkl"))
 except Exception as e:
+    model = None
+    vectorizer = None
     print(f"CRITICAL: Could not load model or vectorizer. Error: {e}")
 
 @app.after_request
@@ -79,6 +95,7 @@ def analyze_url(cleaned_url: str, ml_confidence: float) -> dict:
     flags = []
 
     url_lower = cleaned_url.lower()
+    host = url_lower.split('/')[0]  # host portion only (scheme/www already stripped)
 
     # ── 1. Keyword check ──────────────────────────────────────────────────────
     matched_keywords = [kw for kw in HIGH_RISK_KEYWORDS if kw in url_lower]
@@ -87,10 +104,10 @@ def analyze_url(cleaned_url: str, ml_confidence: float) -> dict:
         risk_score += keyword_score
         flags.append(f"Suspicious keyword(s) found: {', '.join(matched_keywords[:5])}")
 
-    # ── 2. Free hosting check ─────────────────────────────────────────────────
+    # ── 2. Free hosting check (match the HOST only, not the path/query) ───────
     on_free_host = False
     for domain in FREE_HOSTING_DOMAINS:
-        if url_lower.startswith(domain) or ("." + domain) in url_lower:
+        if host == domain or host.endswith("." + domain):
             on_free_host = True
             risk_score += 25
             flags.append(f"Hosted on free platform ({domain}) commonly abused for phishing")
@@ -116,7 +133,6 @@ def analyze_url(cleaned_url: str, ml_confidence: float) -> dict:
         risk_score += 10
         flags.append(f"Many dots in URL ({dot_count})")
 
-    host = url_lower.split('/')[0]
     hyphen_count = host.count('-')
     if hyphen_count >= 3:
         risk_score += 10
@@ -149,6 +165,12 @@ def analyze_url(cleaned_url: str, ml_confidence: float) -> dict:
     else:
         label = "Safe"
 
+    # On a Safe verdict the model's vote didn't carry the result, so drop the alarming
+    # "highly confident this is phishing" flag — it would otherwise contradict the Safe label
+    # in both the analysis log and the frontend's ML security-check tile.
+    if label == "Safe":
+        flags = [f for f in flags if "highly confident" not in f]
+
     return {
         "label": label,
         "risk_score": risk_score,
@@ -177,6 +199,9 @@ def home():
 def predict():
     # Handle both JSON (from React/Node backend) and Form Data (from Flask template)
     if request.is_json:
+        # The JSON path is the backend→ML channel — require the shared token when configured.
+        if ML_INTERNAL_TOKEN and request.headers.get('X-Internal-Token') != ML_INTERNAL_TOKEN:
+            return jsonify({'error': 'Unauthorized'}), 401
         data = request.get_json()
         if not data or 'url' not in data:
             return jsonify({'error': 'URL is required'}), 400
@@ -189,6 +214,12 @@ def predict():
     url = url.strip()
     if not url:
         return render_template('index.html', error="URL is required")
+
+    # Fail cleanly if the model never loaded, instead of throwing an opaque 500.
+    if model is None or vectorizer is None:
+        if request.is_json:
+            return jsonify({'error': 'ML model is unavailable'}), 503
+        return render_template('index.html', error="ML model is currently unavailable."), 503
 
     # Preprocess
     cleaned_url = clean_url(url)
@@ -225,4 +256,5 @@ def predict():
 
 
 if __name__ == '__main__':
-    app.run(port=5001, debug=True)
+    # Debug mode exposes the Werkzeug interactive debugger (RCE risk) — only on when explicitly enabled.
+    app.run(port=5001, debug=os.environ.get('FLASK_DEBUG') == '1')
