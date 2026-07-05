@@ -85,9 +85,10 @@ export default function App() {
       if (!cancelled) setWarmSecs(Math.floor((Date.now() - started) / 1000));
     }, 1000);
 
-    // Safety net: never keep the UI locked for more than 25s, even if /api/health is
-    // unreachable or an older backend doesn't report `ml`. The user can then scan manually.
-    const fallback = setTimeout(finish, 25000);
+    // Safety net: a normal cold start finishes (~50s) well before this fires; it only exists so a
+    // genuinely-down backend can't lock the UI forever. If it releases early, the backend still
+    // returns an honest "warming up" 503 and the UI drops back into warm-up mode.
+    const fallback = setTimeout(finish, 90000);
 
     const poll = async () => {
       while (!cancelled) {
@@ -176,15 +177,27 @@ export default function App() {
                 <div
                   className="warmup-banner"
                   style={{
-                    display: 'flex', alignItems: 'center', gap: 8,
-                    padding: '10px 12px', marginBottom: 12, borderRadius: 6,
-                    fontSize: 13, color: 'var(--warning)',
+                    padding: '12px 14px', marginBottom: 12, borderRadius: 8,
+                    color: 'var(--warning)',
                     background: 'color-mix(in srgb, var(--warning) 12%, transparent)',
                     border: '1px solid color-mix(in srgb, var(--warning) 35%, transparent)',
                   }}
                 >
-                  <Loader2 size={15} className="spinner" />
-                  Waking the detection engine (free-tier cold start)… {warmSecs}s
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+                    <span style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, fontWeight: 600 }}>
+                      <Loader2 size={15} className="spinner" />
+                      Warming up the backend…
+                    </span>
+                    <span style={{ fontFamily: 'var(--font-mono)', fontSize: 13, fontWeight: 700, fontVariantNumeric: 'tabular-nums' }}>
+                      {warmSecs}s
+                    </span>
+                  </div>
+                  <div style={{ fontSize: 11.5, opacity: 0.85, marginTop: 5 }}>
+                    First scan after inactivity can take up to ~60s on the free tier. Link testing unlocks automatically once the engine is ready.
+                  </div>
+                  <div style={{ height: 4, borderRadius: 4, marginTop: 9, background: 'color-mix(in srgb, var(--warning) 20%, transparent)', overflow: 'hidden' }}>
+                    <div style={{ height: '100%', width: `${Math.min(100, (warmSecs / 60) * 100)}%`, background: 'var(--warning)', transition: 'width 1s linear' }} />
+                  </div>
                 </div>
               )}
               <form onSubmit={handleCheck}>
