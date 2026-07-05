@@ -67,6 +67,8 @@ export default function App() {
   // If no API URL is configured there's nothing to warm, so the engine is "ready" immediately.
   const [engineReady, setEngineReady] = useState(!import.meta.env.VITE_API_URL);
   const [warmSecs, setWarmSecs]     = useState(0);
+  // Bumping this re-runs the warm-up effect (used when a scan reports the engine is still warming).
+  const [warmKey, setWarmKey]       = useState(0);
 
   // Proactively wake the backend + ML service on first load and poll until both are up.
   // On Render's free tier a cold start can take ~50s, so we show a live timer and keep the
@@ -101,7 +103,10 @@ export default function App() {
     poll();
 
     return () => { cancelled = true; clearInterval(timer); clearTimeout(fallback); };
-  }, []);
+  }, [warmKey]);
+
+  // Drop the UI back into warm-up mode (banner + timer + disabled button) and re-run the poll.
+  const restartWarmUp = () => { setEngineReady(false); setWarmSecs(0); setWarmKey(k => k + 1); };
 
   const handleCheck = async (e) => {
     e.preventDefault();
@@ -120,6 +125,11 @@ export default function App() {
 
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
+        // Engine still warming up — go back into warm-up mode so the button re-enables when ready.
+        if (res.status === 503 && err.warmingUp) {
+          restartWarmUp();
+          throw new Error(err.error || 'The analysis engine is warming up. Please try again in a moment.');
+        }
         throw new Error(err.error || 'Server error.');
       }
 

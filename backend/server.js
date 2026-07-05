@@ -195,20 +195,24 @@ app.post('/api/check-url', async (req, res) => {
     // --- B. Machine Learning + Rule-Based Service Check ---
     const mlResult = await checkMLService(processedUrl);
 
-    if (mlResult) {
-      prediction = mlResult.result || 'Safe';
-      riskScore = mlResult.risk_score ?? 0;
+    if (!mlResult) {
+      // ML engine unreachable (cold-starting or down). Return an honest "try again" instead of
+      // a fabricated Suspicious/50 verdict, which would mislabel safe sites. The frontend uses
+      // the warmingUp flag to drop back into its warm-up state and re-enable once ML is ready.
+      return res.status(503).json({
+        error: 'The analysis engine is warming up. Please try again in a few seconds.',
+        warmingUp: true,
+      });
+    }
 
-      const mlPct = mlResult.ml_score ?? 0;
-      reasons.push(`ML + Rules analysis: ${prediction} (Risk Score: ${riskScore}/100, ML confidence: ${mlPct.toFixed(1)}%)`);
+    prediction = mlResult.result || 'Safe';
+    riskScore = mlResult.risk_score ?? 0;
 
-      if (Array.isArray(mlResult.flags)) {
-        mlResult.flags.forEach(flag => reasons.push(flag));
-      }
-    } else {
-      reasons.push('ML Service unavailable, relying on rule-based fallback.');
-      prediction = 'Suspicious';
-      riskScore = 50;
+    const mlPct = mlResult.ml_score ?? 0;
+    reasons.push(`ML + Rules analysis: ${prediction} (Risk Score: ${riskScore}/100, ML confidence: ${mlPct.toFixed(1)}%)`);
+
+    if (Array.isArray(mlResult.flags)) {
+      mlResult.flags.forEach(flag => reasons.push(flag));
     }
 
     const addRuleExplanation = (reason) => {
